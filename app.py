@@ -9,20 +9,25 @@ from datetime import datetime, timedelta, time
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted']
 
 def decimal_to_hhmm(decimal_hours):
-    if decimal_hours < 0: decimal_hours = 0
+    if not isinstance(decimal_hours, (int, float)) or decimal_hours < 0:
+        return "00:00"
     hours = int(decimal_hours)
     minutes = int(round((decimal_hours - hours) * 60))
     return f"{hours:02d}:{minutes:02d}"
 
 def prepare_dataframe(df):
-    """[แก้ไข] แปลงชนิดข้อมูลให้ถูกต้องและแข็งแรงขึ้น ป้องกัน Error"""
+    """[ใหม่] ฟังก์ชันเตรียมข้อมูลที่แข็งแรงขึ้น เพื่อป้องกัน Error ทุกกรณี"""
+    # 1. จัดการคอลัมน์ Date
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
 
+    # 2. จัดการคอลัมน์เวลาทั้งหมด
     time_columns = ['TimeIn', 'TimeOut', 'Deduction']
     for col in time_columns:
-        # [แก้ไข] แก้ไข Format จาก %H:M เป็น %H:%M ที่ถูกต้อง
-        df[col] = pd.to_datetime(df[col].astype(str), format='%H:%M', errors='coerce').dt.time
+        # บังคับให้เป็น string, แทนที่ text ที่เป็นค่าว่างด้วย None, แล้วค่อยแปลงเป็นเวลา
+        s = df[col].astype(str).replace({'NaT': None, 'None': None, '': None})
+        df[col] = pd.to_datetime(s, format='%H:%M', errors='coerce').dt.time
 
+    # 3. จัดการคอลัมน์ข้อความ
     str_columns = ['DayType', 'OT_Formatted']
     for col in str_columns:
         df[col] = df[col].fillna('').astype(str)
@@ -34,9 +39,8 @@ def calculate_ot(row):
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         deduction_time = row.get('Deduction')
 
-        # ตรวจสอบว่ามีข้อมูลเวลาเข้า/ออก ครบถ้วนหรือไม่
-        if not isinstance(time_in, time) or not isinstance(time_out, time) or not day_type:
-            return 0
+        if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type:
+            return 0.0
 
         dummy_date = datetime.now().date()
         dt_in = datetime.combine(dummy_date, time_in)
@@ -45,7 +49,7 @@ def calculate_ot(row):
         if dt_out <= dt_in: dt_out += timedelta(days=1)
 
         total_duration = dt_out - dt_in
-        ot_hours_decimal = 0
+        ot_hours_decimal = 0.0
         
         if day_type == 'Weekday':
             actual_end_shift = dt_in + timedelta(hours=9)
@@ -58,14 +62,14 @@ def calculate_ot(row):
             if total_duration > timedelta(hours=9): work_duration -= timedelta(minutes=30)
             ot_hours_decimal = work_duration.total_seconds() / 3600
         
-        deduction_decimal = 0
+        deduction_decimal = 0.0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
             
         final_ot = ot_hours_decimal - deduction_decimal
-        return max(0, final_ot)
-    except (ValueError, TypeError, AttributeError):
-        return 0
+        return max(0.0, final_ot)
+    except Exception:
+        return 0.0
 
 def setup_sheet(worksheet):
     try:
@@ -111,13 +115,14 @@ with st.container(border=True):
                 st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
                 if st.session_state.worksheet:
                     all_data = st.session_state.worksheet.get_all_records()
-                    df_from_sheet = pd.DataFrame(all_data)
+                    df = pd.DataFrame(all_data)
                     
-                    st.session_state.df = pd.DataFrame(columns=REQUIRED_COLUMNS)
-                    if not df_from_sheet.empty:
-                        st.session_state.df = pd.concat([st.session_state.df, df_from_sheet], ignore_index=True)
-                    st.session_state.df = st.session_state.df.reindex(columns=REQUIRED_COLUMNS)
+                    # [ใหม่] สร้าง DataFrame ให้ถูกต้องและปลอดภัย
+                    for col in REQUIRED_COLUMNS:
+                        if col not in df.columns:
+                            df[col] = None # สร้างคอลัมน์ที่ขาดไปด้วยค่าว่างที่ปลอดภัย
                     
+                    st.session_state.df = df[REQUIRED_COLUMNS]
                     st.session_state.df = prepare_dataframe(st.session_state.df)
                     st.success("ดึงข้อมูลสำเร็จ!")
 
@@ -146,7 +151,8 @@ if st.session_state.df is not None:
     with col1:
         if st.button("🧮 คำนวณ OT ทั้งหมด", use_container_width=True):
             if not edited_df.empty:
-                df_to_process = edited_df.copy()
+                # ก่อนคำนวณ ให้ clean ข้อมูลที่แก้ไขล่าสุดอีกครั้งเพื่อความปลอดภัย
+                df_to_process = prepare_dataframe(edited_df.copy())
                 ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
                 df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
                 st.session_state.df = df_to_process
@@ -159,10 +165,8 @@ if st.session_state.df is not None:
                     df_to_save = edited_df.copy()
                     
                     for col in ['TimeIn', 'TimeOut', 'Deduction']:
-                        # แปลงเวลาเป็น string หรือ None ถ้าไม่มีค่า
-                        df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else None)
+                        df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
                     
-                    # แปลงวันที่เป็น string หรือ None ถ้าไม่มีค่า
                     df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
                     df_to_save.fillna('', inplace=True)
                     
