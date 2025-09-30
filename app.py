@@ -9,6 +9,20 @@ import numpy as np
 # --- ค่าคงที่และฟังก์ชัน ---
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
 
+def prepare_dataframe(df):
+    """ฟังก์ชันกลางสำหรับทำความสะอาดและแปลงชนิดข้อมูลของ DataFrame ให้ถูกต้อง 100%"""
+    clean_df = pd.DataFrame()
+    for col in REQUIRED_COLUMNS:
+        source_series = df.get(col, pd.Series(dtype='object'))
+        if col == 'Date':
+            clean_df[col] = pd.to_datetime(source_series, errors='coerce')
+        elif col in ['TimeIn', 'TimeOut', 'Deduction']:
+            temp_series = pd.Series(source_series, dtype=str).replace(['', 'None', 'nan', 'NaT'], pd.NaT)
+            clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
+        else:
+            clean_df[col] = pd.Series(source_series, dtype=str).fillna('')
+    return clean_df
+
 def decimal_to_hhmm(decimal_hours):
     if not isinstance(decimal_hours, (int, float)) or decimal_hours < 0: return "00:00"
     hours = int(decimal_hours)
@@ -19,35 +33,27 @@ def calculate_ot(row):
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type: return 0.0
-        
         dummy_date = datetime.now().date()
         dt_in, dt_out = datetime.combine(dummy_date, time_in), datetime.combine(dummy_date, time_out)
         if dt_out <= dt_in: dt_out += timedelta(days=1)
-        
         ot_hours_decimal = 0.0
-        
         if day_type == 'Weekday':
             standard_start_time = datetime.combine(dummy_date, time(9, 0))
             calculation_base_time = max(dt_in, standard_start_time)
             ot_start_time = calculation_base_time + timedelta(hours=9, minutes=30)
-            if dt_out > ot_start_time: 
-                ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
-        
+            if dt_out > ot_start_time: ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
         elif day_type == 'Weekend':
             total_duration = dt_out - dt_in
             breaks = timedelta(hours=0)
             if total_duration > timedelta(hours=4): breaks += timedelta(hours=1)
             if total_duration > timedelta(hours=9): breaks += timedelta(minutes=30)
             ot_hours_decimal = (total_duration - breaks).total_seconds() / 3600
-        
         deduction_time = row.get('Deduction')
         deduction_decimal = 0.0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
-            
         return max(0.0, ot_hours_decimal - deduction_decimal)
-    except Exception: 
-        return 0.0
+    except Exception: return 0.0
 
 def setup_sheet(worksheet):
     try:
@@ -88,35 +94,21 @@ with st.container(border=True):
             st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
             if st.session_state.worksheet:
                 all_values = st.session_state.worksheet.get_all_values()
-                if len(all_values) > 1:
-                    headers, data_rows = all_values[0], all_values[1:]
-                    source_df = pd.DataFrame(data_rows, columns=headers, dtype=str)
-                else:
-                    source_df = pd.DataFrame(columns=REQUIRED_COLUMNS, dtype=str)
-
-                clean_df = pd.DataFrame()
-                for col in REQUIRED_COLUMNS:
-                    series = source_df.get(col, pd.Series(dtype='str')).fillna('')
-                    if col == 'Date':
-                        clean_df[col] = pd.to_datetime(series, errors='coerce')
-                    elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-                        clean_df[col] = pd.to_datetime(series, format='%H:%M', errors='coerce').dt.time
-                    else:
-                        clean_df[col] = series
-                st.session_state.df = clean_df
+                source_df = pd.DataFrame(all_values[1:], columns=all_values[0]) if len(all_values) > 1 else pd.DataFrame()
+                st.session_state.df = prepare_dataframe(source_df)
                 st.success("เชื่อมต่อสำเร็จ!")
 
 if st.session_state.df is not None:
     st.header("📝 ตารางเวลาทำงาน")
     st.caption("คุณสามารถ **แก้ไขข้อมูล** ในตารางได้โดยตรง | **ดับเบิลคลิก** ที่ช่องวันที่/เวลาเพื่อเปิดตัวเลือก")
 
-    st.session_state.df['Delete'] = False
+    df_display = st.session_state.df.copy()
+    df_display['Delete'] = False
     display_columns = ['Delete'] + REQUIRED_COLUMNS
     
     edited_df = st.data_editor(
-        st.session_state.df[display_columns],
-        key="main_data_editor",
-        num_rows="dynamic",
+        df_display[display_columns],
+        key="main_data_editor", num_rows="dynamic",
         column_config={
             "Delete": st.column_config.CheckboxColumn("ลบ", default=False),
             "Date": st.column_config.DateColumn("🗓️ วันที่", format="YYYY-MM-DD", required=True),
@@ -127,66 +119,54 @@ if st.session_state.df is not None:
             "OT_Formatted": st.column_config.TextColumn("💰 OT (ชม.:นาที)", disabled=True),
             "Note": st.column_config.TextColumn("📝 หมายเหตุ"),
         },
-        use_container_width=True,
-        disabled=['OT_Formatted']
-    )
+        use_container_width=True, disabled=['OT_Formatted'])
 
     st.markdown("---")
-
-    # --- ส่วนสรุปผลและคำนวณเงิน ---
-    st.header("📊 สรุปผลและคำนวณรายรับ")
     
-    # คำนวณ OT รวม (แปลง OT_Formatted กลับเป็นทศนิยมก่อน)
+    st.header("📊 สรุปผลและคำนวณรายรับ")
     def hhmm_to_decimal(t_str):
         try:
             h, m = map(int, t_str.split(':'))
             return h + m / 60
-        except:
-            return 0
-            
+        except: return 0
     total_ot_decimal = edited_df['OT_Formatted'].apply(hhmm_to_decimal).sum()
-    total_ot_hours = int(total_ot_decimal)
-    total_ot_minutes = int((total_ot_decimal - total_ot_hours) * 60)
-
+    total_ot_hours, total_ot_minutes = int(total_ot_decimal), int((total_ot_decimal - int(total_ot_decimal)) * 60)
     col_summary, col_salary = st.columns(2)
     with col_summary:
         st.metric(label="ชั่วโมง OT ทั้งหมด", value=f"{total_ot_hours} ชั่วโมง {total_ot_minutes} นาที")
-
     with col_salary:
         salary = st.number_input("💵 กรอกเงินเดือน (บาท)", min_value=0, value=31000)
         if salary > 0:
             rate_per_hour = np.floor(salary / 30 / 8 * 1.5)
             rate_per_minute = np.floor(rate_per_hour / 60)
-            
             ot_income = (total_ot_hours * rate_per_hour) + (total_ot_minutes * rate_per_minute)
             st.metric(label="รายรับ OT โดยประมาณ", value=f"฿ {ot_income:,.2f}")
 
     st.markdown("---")
-
-    # --- ส่วนปุ่มจัดการ ---
     st.header("⚙️ เครื่องมือจัดการ")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("🗑️ ลบแถวที่เลือก", use_container_width=True):
             rows_to_delete = edited_df[edited_df['Delete'] == True].index
-            st.session_state.df = st.session_state.df.drop(rows_to_delete).reset_index(drop=True)
+            df_after_delete = edited_df.drop(rows_to_delete)
+            st.session_state.df = prepare_dataframe(df_after_delete)
             st.rerun()
     with col2:
         if st.button("📅 เรียงตามวันที่", use_container_width=True):
-            st.session_state.df['Date'] = pd.to_datetime(st.session_state.df['Date'])
-            st.session_state.df = st.session_state.df.sort_values(by="Date", ascending=True).reset_index(drop=True)
+            df_sorted = edited_df.sort_values(by="Date", ascending=True)
+            st.session_state.df = prepare_dataframe(df_sorted)
             st.rerun()
     with col3:
         if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
-            df_to_process = edited_df.drop(columns=['Delete']).copy()
-            ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
+            ot_decimal_values = edited_df.apply(calculate_ot, axis=1)
+            df_to_process = edited_df.copy()
             df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
-            st.session_state.df = df_to_process
+            st.session_state.df = prepare_dataframe(df_to_process)
             st.rerun()
     with col4:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
-                df_to_save = edited_df.drop(columns=['Delete']).copy()
+                df_to_save = edited_df.drop(columns=['Delete'])
                 df_to_save = df_to_save.reindex(columns=REQUIRED_COLUMNS)
                 for col in ['TimeIn', 'TimeOut', 'Deduction']:
                     df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
