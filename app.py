@@ -10,29 +10,17 @@ import numpy as np
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
 
 def prepare_dataframe(df):
-    """[REWRITE] ฟังก์ชันทำความสะอาดข้อมูลที่ฉลาดขึ้น ไม่ทำลายข้อมูลที่ถูกต้องอยู่แล้ว"""
+    """ฟังก์ชันกลางสำหรับทำความสะอาดและแปลงชนิดข้อมูลของ DataFrame ให้ถูกต้อง 100%"""
     clean_df = pd.DataFrame()
     for col in REQUIRED_COLUMNS:
-        # ใช้ source_df ที่มีอยู่ ถ้าไม่มีให้สร้าง Series ว่าง
         source_series = df.get(col, pd.Series(dtype='object'))
-
         if col == 'Date':
             clean_df[col] = pd.to_datetime(source_series, errors='coerce')
         elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-            # ฟังก์ชันย่อยสำหรับแปลงข้อมูลอย่างปลอดภัย
-            def to_time_obj(x):
-                if isinstance(x, time):
-                    return x  # ถ้าเป็น time object อยู่แล้ว ให้คงไว้
-                if pd.isna(x) or str(x).strip() in ['', 'None', 'NaT', 'nan']:
-                    return None  # จัดการค่าว่างทุกรูปแบบ
-                try:
-                    return datetime.strptime(str(x), '%H:%M').time()
-                except (ValueError, TypeError):
-                    return None
-            clean_df[col] = source_series.apply(to_time_obj)
-        else: # คอลัมน์ที่เป็นข้อความ
+            temp_series = pd.Series(source_series, dtype=str).replace(['', 'None', 'nan', 'NaT'], pd.NaT)
+            clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
+        else:
             clean_df[col] = pd.Series(source_series, dtype=str).fillna('')
-            
     return clean_df
 
 def decimal_to_hhmm(decimal_hours):
@@ -45,27 +33,41 @@ def calculate_ot(row):
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type: return 0.0
+        
         dummy_date = datetime.now().date()
         dt_in, dt_out = datetime.combine(dummy_date, time_in), datetime.combine(dummy_date, time_out)
         if dt_out <= dt_in: dt_out += timedelta(days=1)
+        
         ot_hours_decimal = 0.0
+        
         if day_type == 'Weekday':
             standard_start_time = datetime.combine(dummy_date, time(9, 0))
             calculation_base_time = max(dt_in, standard_start_time)
             ot_start_time = calculation_base_time + timedelta(hours=9, minutes=30)
             if dt_out > ot_start_time: ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
+        
         elif day_type == 'Weekend':
             total_duration = dt_out - dt_in
             breaks = timedelta(hours=0)
-            if total_duration > timedelta(hours=4): breaks += timedelta(hours=1)
-            if total_duration > timedelta(hours=9): breaks += timedelta(minutes=30)
+            
+            # --- [LOGIC UPDATE] เพิ่มเงื่อนไขตรวจสอบเวลาเข้างานสำหรับวันหยุด ---
+            if total_duration > timedelta(hours=4) and time_in < time(13, 0):
+                breaks += timedelta(hours=1)
+            # ----------------------------------------------------------------
+
+            if total_duration > timedelta(hours=9): 
+                breaks += timedelta(minutes=30)
+            
             ot_hours_decimal = (total_duration - breaks).total_seconds() / 3600
+        
         deduction_time = row.get('Deduction')
         deduction_decimal = 0.0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
+        
         return max(0.0, ot_hours_decimal - deduction_decimal)
-    except Exception: return 0.0
+    except Exception: 
+        return 0.0
 
 def setup_sheet(worksheet):
     try:
