@@ -4,6 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from gspread_dataframe import set_with_dataframe
 from datetime import datetime, timedelta, time
+import numpy as np
 
 # --- ค่าคงที่และฟังก์ชัน ---
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
@@ -15,7 +16,6 @@ def decimal_to_hhmm(decimal_hours):
     return f"{hours:02d}:{minutes:02d}"
 
 def calculate_ot(row):
-    """[ปรับปรุง] เพิ่มตรรกะ: ถ้าเข้างานก่อน 9:00 ในวันธรรมดา ให้เริ่มนับเวลาทำงานตอน 9:00"""
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type: return 0.0
@@ -24,25 +24,17 @@ def calculate_ot(row):
         dt_in, dt_out = datetime.combine(dummy_date, time_in), datetime.combine(dummy_date, time_out)
         if dt_out <= dt_in: dt_out += timedelta(days=1)
         
-        # --- [LOGIC UPDATE] ---
-        # กำหนดเวลาเริ่มงานที่ใช้คำนวณจริง (Effective Start Time)
-        effective_start_time = dt_in
-        if day_type == 'Weekday':
-            standard_start_time = datetime.combine(dummy_date, time(9, 0))
-            if dt_in < standard_start_time:
-                effective_start_time = standard_start_time # ถ้ามาเร็ว ให้เริ่มนับตอน 9 โมง
-        # ----------------------
-
-        total_duration = dt_out - dt_in
         ot_hours_decimal = 0.0
         
         if day_type == 'Weekday':
-            # ใช้ effective_start_time ในการคำนวณ
-            ot_start_time = effective_start_time + timedelta(hours=9, minutes=30)
+            standard_start_time = datetime.combine(dummy_date, time(9, 0))
+            calculation_base_time = max(dt_in, standard_start_time)
+            ot_start_time = calculation_base_time + timedelta(hours=9, minutes=30)
             if dt_out > ot_start_time: 
                 ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
         
         elif day_type == 'Weekend':
+            total_duration = dt_out - dt_in
             breaks = timedelta(hours=0)
             if total_duration > timedelta(hours=4): breaks += timedelta(hours=1)
             if total_duration > timedelta(hours=9): breaks += timedelta(minutes=30)
@@ -141,11 +133,43 @@ if st.session_state.df is not None:
 
     st.markdown("---")
 
+    # --- ส่วนสรุปผลและคำนวณเงิน ---
+    st.header("📊 สรุปผลและคำนวณรายรับ")
+    
+    # คำนวณ OT รวม (แปลง OT_Formatted กลับเป็นทศนิยมก่อน)
+    def hhmm_to_decimal(t_str):
+        try:
+            h, m = map(int, t_str.split(':'))
+            return h + m / 60
+        except:
+            return 0
+            
+    total_ot_decimal = edited_df['OT_Formatted'].apply(hhmm_to_decimal).sum()
+    total_ot_hours = int(total_ot_decimal)
+    total_ot_minutes = int((total_ot_decimal - total_ot_hours) * 60)
+
+    col_summary, col_salary = st.columns(2)
+    with col_summary:
+        st.metric(label="ชั่วโมง OT ทั้งหมด", value=f"{total_ot_hours} ชั่วโมง {total_ot_minutes} นาที")
+
+    with col_salary:
+        salary = st.number_input("💵 กรอกเงินเดือน (บาท)", min_value=0, value=31000)
+        if salary > 0:
+            rate_per_hour = np.floor(salary / 30 / 8 * 1.5)
+            rate_per_minute = np.floor(rate_per_hour / 60)
+            
+            ot_income = (total_ot_hours * rate_per_hour) + (total_ot_minutes * rate_per_minute)
+            st.metric(label="รายรับ OT โดยประมาณ", value=f"฿ {ot_income:,.2f}")
+
+    st.markdown("---")
+
+    # --- ส่วนปุ่มจัดการ ---
+    st.header("⚙️ เครื่องมือจัดการ")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("🗑️ ลบแถวที่เลือก", use_container_width=True):
             rows_to_delete = edited_df[edited_df['Delete'] == True].index
-            st.session_state.df = st.session_state.df.drop(rows_to_delete)
+            st.session_state.df = st.session_state.df.drop(rows_to_delete).reset_index(drop=True)
             st.rerun()
     with col2:
         if st.button("📅 เรียงตามวันที่", use_container_width=True):
@@ -164,12 +188,10 @@ if st.session_state.df is not None:
             with st.spinner("กำลังบันทึก..."):
                 df_to_save = edited_df.drop(columns=['Delete']).copy()
                 df_to_save = df_to_save.reindex(columns=REQUIRED_COLUMNS)
-
                 for col in ['TimeIn', 'TimeOut', 'Deduction']:
                     df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
                 df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
                 df_to_save.fillna('', inplace=True)
-                
                 st.session_state.worksheet.clear()
                 set_with_dataframe(st.session_state.worksheet, df_to_save, include_index=False)
                 st.success("บันทึกข้อมูลเรียบร้อย!")
