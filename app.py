@@ -5,7 +5,7 @@ from google.oauth2.service_account import Credentials
 from gspread_dataframe import set_with_dataframe
 from datetime import datetime, timedelta, time
 
-# --- ค่าคงที่และฟังก์ชัน ---
+# --- ค่าคงที่และฟังก์ชัน (เหมือนเดิม แต่เสถียรขึ้น) ---
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted']
 
 def decimal_to_hhmm(decimal_hours):
@@ -15,12 +15,9 @@ def decimal_to_hhmm(decimal_hours):
     minutes = int(round((decimal_hours - hours) * 60))
     return f"{hours:02d}:{minutes:02d}"
 
-def calculate_ot(row):
-    """[REWRITE] เขียนฟังก์ชันคำนวณใหม่ทั้งหมดให้ถูกต้องและเข้าใจง่าย"""
+def calculate_ot(time_in, time_out, day_type, deduction_time):
     try:
-        time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
-
-        if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type:
+        if not all([isinstance(t, time) for t in [time_in, time_out]]) or not day_type:
             return 0.0
 
         dummy_date = datetime.now().date()
@@ -33,24 +30,17 @@ def calculate_ot(row):
         ot_hours_decimal = 0.0
         
         if day_type == 'Weekday':
-            # OT เริ่มนับหลังเวลาเข้างาน + 9 ชม. 30 นาที
             ot_start_time = dt_in + timedelta(hours=9, minutes=30)
             if dt_out > ot_start_time:
-                ot_duration = dt_out - ot_start_time
-                ot_hours_decimal = ot_duration.total_seconds() / 3600
+                ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
         
         elif day_type == 'Weekend':
-            # วันหยุด OT คือเวลาทั้งหมด หักเวลาพักตามเงื่อนไข
             breaks = timedelta(hours=0)
-            if total_duration > timedelta(hours=4): # พักกลางวัน 1 ชม.
-                breaks += timedelta(hours=1)
-            if total_duration > timedelta(hours=9): # พักเพิ่มอีก 30 นาที
-                breaks += timedelta(minutes=30)
-            
+            if total_duration > timedelta(hours=4): breaks += timedelta(hours=1)
+            if total_duration > timedelta(hours=9): breaks += timedelta(minutes=30)
             work_duration = total_duration - breaks
             ot_hours_decimal = work_duration.total_seconds() / 3600
         
-        deduction_time = row.get('Deduction')
         deduction_decimal = 0.0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
@@ -66,7 +56,6 @@ def setup_sheet(worksheet):
     except gspread.exceptions.APIError: headers = []
     missing_columns = [col for col in REQUIRED_COLUMNS if col not in headers]
     if missing_columns:
-        st.info(f"กำลังสร้างคอลัมน์ที่ขาดไป: {', '.join(missing_columns)}")
         start_col_index = len(headers) + 1
         cell_list = [gspread.Cell(1, start_col_index + i, value=col_name) for i, col_name in enumerate(missing_columns)]
         worksheet.update_cells(cell_list)
@@ -83,87 +72,81 @@ def connect_to_gsheet(sheet_url, sheet_name):
         except gspread.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="20")
         return setup_sheet(worksheet)
-    except Exception as e:
-        st.error(f"การเชื่อมต่อล้มเหลว: {e}")
+    except Exception:
         return None
 
-# --- ส่วนหน้าเว็บ Streamlit ---
+# --- ส่วนหน้าเว็บ Streamlit (ดีไซน์ใหม่) ---
 st.set_page_config(layout="wide")
 st.title("🚀 OT Calculator | โปรแกรมคำนวณโอที")
 
-if 'df' not in st.session_state: st.session_state.df = None
-if 'worksheet' not in st.session_state: st.session_state.worksheet = None
-
+# --- 1. ส่วนเชื่อมต่อ ---
 with st.container(border=True):
-    st.subheader("เชื่อมต่อ Google Sheet")
     sheet_url = st.text_input("🔗 วางลิงก์ Google Sheet ของคุณที่นี่")
     sheet_name = st.text_input("🏷️ ชื่อชีต (Sheet Name)", value="timesheet")
-    if st.button("เชื่อมต่อและดึงข้อมูล", type="primary"):
-        if sheet_url and sheet_name:
-            with st.spinner("กำลังเชื่อมต่อ..."):
-                st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
-                if st.session_state.worksheet:
-                    all_values = st.session_state.worksheet.get_all_values()
-                    if len(all_values) > 1:
-                        headers, data_rows = all_values[0], all_values[1:]
-                        source_df = pd.DataFrame(data_rows, columns=headers, dtype=str)
-                    else:
-                        source_df = pd.DataFrame(columns=REQUIRED_COLUMNS, dtype=str)
+    if st.button("เชื่อมต่อ / รีเฟรชข้อมูล", type="primary"):
+        with st.spinner("กำลังเชื่อมต่อ..."):
+            worksheet = connect_to_gsheet(sheet_url, sheet_name)
+            if worksheet:
+                st.session_state.worksheet = worksheet
+                all_values = worksheet.get_all_values()
+                if len(all_values) > 1:
+                    df = pd.DataFrame(all_values[1:], columns=all_values[0], dtype=str)
+                else:
+                    df = pd.DataFrame(columns=REQUIRED_COLUMNS, dtype=str)
+                st.session_state.df = df
+                st.success("เชื่อมต่อสำเร็จ!")
+            else:
+                st.error("เชื่อมต่อล้มเหลว! ตรวจสอบลิงก์และสิทธิ์การเข้าถึง")
 
-                    clean_df = pd.DataFrame()
-                    for col in REQUIRED_COLUMNS:
-                        series = source_df.get(col, pd.Series(dtype='str')).fillna('')
-                        if col == 'Date':
-                            clean_df[col] = pd.to_datetime(series, errors='coerce')
-                        elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-                            clean_df[col] = pd.to_datetime(series, format='%H:%M', errors='coerce').dt.time
-                        else:
-                            clean_df[col] = series
-                    
-                    st.session_state.df = clean_df
-                    st.success("ดึงข้อมูลสำเร็จ!")
-
-if st.session_state.df is not None:
-    st.header("📝 ตารางเวลาทำงาน")
-    st.caption("✨ **คำแนะนำ:** **ดับเบิลคลิก** ที่ช่องวันที่/เวลาเพื่อเปิดตัวเลือก | หากใช้ Brave Browser ให้ปิด Shields (ไอคอนสิงโต) ก่อน")
-
-    edited_df = st.data_editor(
-        st.session_state.df, num_rows="dynamic",
-        column_config={
-            "Date": st.column_config.DateColumn("🗓️ วันที่", format="YYYY-MM-DD", required=True),
-            "DayType": st.column_config.SelectboxColumn("✨ ประเภทวัน", options=["Weekday", "Weekend"], required=True),
-            "TimeIn": st.column_config.TimeColumn("🕘 เวลาเข้า", format="HH:mm", required=True, step=60),
-            "TimeOut": st.column_config.TimeColumn("🕕 เวลาออก", format="HH:mm", required=True, step=60),
-            "Deduction": st.column_config.TimeColumn("✂️ หักเวลา", format="HH:mm", step=60),
-            "OT_Formatted": st.column_config.TextColumn("💰 OT (ชั่วโมง:นาที)", disabled=True),
-        },
-        use_container_width=True, key="data_editor")
+if 'df' in st.session_state:
+    # --- 2. ส่วนเพิ่มข้อมูล (ฟอร์ม) ---
+    st.header("➕ เพิ่มรายการทำงานใหม่")
+    with st.form("entry_form", clear_on_submit=True):
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            new_date = st.date_input("🗓️ วันที่")
+        with col2:
+            new_day_type = st.selectbox("✨ ประเภทวัน", ["Weekday", "Weekend"])
+        with col3:
+            new_time_in = st.time_input("🕘 เวลาเข้า", step=60)
+        with col4:
+            new_time_out = st.time_input("🕕 เวลาออก", step=60)
+        with col5:
+            new_deduction = st.time_input("✂️ หักเวลา", value=time(0,0), step=60)
+        
+        submitted = st.form_submit_button("คำนวณและเพิ่มลงตาราง")
+        if submitted:
+            ot_decimal = calculate_ot(new_time_in, new_time_out, new_day_type, new_deduction)
+            ot_formatted = decimal_to_hhmm(ot_decimal)
+            
+            new_row = pd.DataFrame([{
+                'Date': new_date.strftime('%Y-%m-%d'),
+                'DayType': new_day_type,
+                'TimeIn': new_time_in.strftime('%H:%M'),
+                'TimeOut': new_time_out.strftime('%H:%M'),
+                'Deduction': new_deduction.strftime('%H:%M'),
+                'OT_Formatted': ot_formatted
+            }])
+            
+            st.session_state.df = pd.concat([st.session_state.df, new_row], ignore_index=True)
+            st.success(f"เพิ่มรายการสำเร็จ! คำนวณ OT ได้: {ot_formatted} ชั่วโมง")
 
     st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
-            if not edited_df.empty:
-                df_to_process = edited_df.copy()
-                ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
-                df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
-                st.session_state.df = df_to_process
-                st.rerun()
 
-    with col2:
-        if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
-            if st.session_state.worksheet:
-                with st.spinner("กำลังบันทึก..."):
-                    df_to_save = edited_df.copy()
-                    
-                    for col in ['TimeIn', 'TimeOut', 'Deduction']:
-                        df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
-                    
-                    # [FIXED] แก้ไข Bug ที่บันทึกข้อมูลผิดคอลัมน์
-                    df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
+    # --- 3. ส่วนแสดงผลและบันทึก ---
+    st.header("📝 ตารางเวลาทำงาน")
+    st.dataframe(st.session_state.df, use_container_width=True)
+    
+    if not st.session_state.df.empty:
+        if st.button("💾 บันทึกข้อมูลทั้งหมดลง Google Sheet", type="primary"):
+            with st.spinner("กำลังบันทึก..."):
+                try:
+                    # เรียงคอลัมน์ให้ตรงกับ REQUIRED_COLUMNS เสมอ
+                    df_to_save = st.session_state.df.reindex(columns=REQUIRED_COLUMNS)
                     df_to_save.fillna('', inplace=True)
-                    
                     st.session_state.worksheet.clear()
+                    # เขียน header + ข้อมูลทั้งหมด
                     set_with_dataframe(st.session_state.worksheet, df_to_save, include_index=False, allow_formulas=False)
-                    st.success("บันทึกข้อมูลเรียบร้อย!")
+                    st.success("บันทึกข้อมูลทั้งหมดเรียบร้อย!")
+                except Exception as e:
+                    st.error(f"เกิดข้อผิดพลาดในการบันทึก: {e}")
