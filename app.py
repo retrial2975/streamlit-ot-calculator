@@ -10,17 +10,29 @@ import numpy as np
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
 
 def prepare_dataframe(df):
-    """ฟังก์ชันกลางสำหรับทำความสะอาดและแปลงชนิดข้อมูลของ DataFrame ให้ถูกต้อง 100%"""
+    """[REWRITE] ฟังก์ชันทำความสะอาดข้อมูลที่ฉลาดขึ้น ไม่ทำลายข้อมูลที่ถูกต้องอยู่แล้ว"""
     clean_df = pd.DataFrame()
     for col in REQUIRED_COLUMNS:
+        # ใช้ source_df ที่มีอยู่ ถ้าไม่มีให้สร้าง Series ว่าง
         source_series = df.get(col, pd.Series(dtype='object'))
+
         if col == 'Date':
             clean_df[col] = pd.to_datetime(source_series, errors='coerce')
         elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-            temp_series = pd.Series(source_series, dtype=str).replace(['', 'None', 'nan', 'NaT'], pd.NaT)
-            clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
-        else:
+            # ฟังก์ชันย่อยสำหรับแปลงข้อมูลอย่างปลอดภัย
+            def to_time_obj(x):
+                if isinstance(x, time):
+                    return x  # ถ้าเป็น time object อยู่แล้ว ให้คงไว้
+                if pd.isna(x) or str(x).strip() in ['', 'None', 'NaT', 'nan']:
+                    return None  # จัดการค่าว่างทุกรูปแบบ
+                try:
+                    return datetime.strptime(str(x), '%H:%M').time()
+                except (ValueError, TypeError):
+                    return None
+            clean_df[col] = source_series.apply(to_time_obj)
+        else: # คอลัมน์ที่เป็นข้อความ
             clean_df[col] = pd.Series(source_series, dtype=str).fillna('')
+            
     return clean_df
 
 def decimal_to_hhmm(decimal_hours):
@@ -93,8 +105,8 @@ with st.container(border=True):
         with st.spinner("กำลังเชื่อมต่อ..."):
             st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
             if st.session_state.worksheet:
-                all_values = st.session_state.worksheet.get_all_values()
-                source_df = pd.DataFrame(all_values[1:], columns=all_values[0]) if len(all_values) > 1 else pd.DataFrame()
+                all_values = st.session_state.worksheet.get_all_records()
+                source_df = pd.DataFrame(all_values)
                 st.session_state.df = prepare_dataframe(source_df)
                 st.success("เชื่อมต่อสำเร็จ!")
 
