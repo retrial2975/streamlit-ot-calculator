@@ -17,7 +17,8 @@ def prepare_dataframe(df):
         if col == 'Date':
             clean_df[col] = pd.to_datetime(source_series, errors='coerce')
         elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-            temp_series = pd.Series(source_series, dtype=str).replace(['', 'None', 'nan', 'NaT'], pd.NaT)
+            # [FIX] ปรับปรุงการจัดการค่าว่างให้เสถียรขึ้น
+            temp_series = pd.Series(source_series, dtype=str).replace(['', 'None', 'nan', 'NaT'], None)
             clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
         else:
             clean_df[col] = pd.Series(source_series, dtype=str).fillna('')
