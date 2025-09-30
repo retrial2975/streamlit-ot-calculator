@@ -95,25 +95,26 @@ with st.container(border=True):
                 st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
                 if st.session_state.worksheet:
                     all_data = st.session_state.worksheet.get_all_records()
-                    source_df = pd.DataFrame(all_data)
                     
-                    # --- [ใหม่] สร้าง DataFrame ด้วยวิธีที่ปลอดภัยและตรงไปตรงมา ---
-                    clean_data = {}
-                    
-                    # จัดการคอลัมน์ Date
-                    clean_data['Date'] = pd.to_datetime(source_df.get('Date'), errors='coerce')
+                    # --- [REWRITE] สร้าง DataFrame ด้วยวิธีที่ปลอดภัยที่สุด ---
+                    if not all_data:
+                        source_df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+                    else:
+                        source_df = pd.DataFrame(all_data)
 
-                    # จัดการคอลัมน์ Time ทั้งหมด
-                    for col in ['TimeIn', 'TimeOut', 'Deduction']:
-                        s = pd.Series(source_df.get(col), dtype=str).replace({'NaT': '', 'None': ''})
-                        clean_data[col] = pd.to_datetime(s, format='%H:%M', errors='coerce').dt.time
+                    clean_df = pd.DataFrame()
+                    for col in REQUIRED_COLUMNS:
+                        source_col_data = source_df.get(col)
+
+                        if col == 'Date':
+                            clean_df[col] = pd.to_datetime(source_col_data, errors='coerce')
+                        elif col in ['TimeIn', 'TimeOut', 'Deduction']:
+                            temp_series = pd.Series(source_col_data, dtype=str).replace(['', 'None', 'nan'], pd.NaT)
+                            clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
+                        else: # DayType, OT_Formatted
+                            clean_df[col] = pd.Series(source_col_data, dtype=str).fillna('')
                     
-                    # จัดการคอลัมน์ String ทั้งหมด
-                    for col in ['DayType', 'OT_Formatted']:
-                        clean_data[col] = pd.Series(source_df.get(col), dtype=str).fillna('')
-                    
-                    # สร้าง DataFrame ที่สะอาดแล้วจาก Dictionary
-                    st.session_state.df = pd.DataFrame(clean_data, columns=REQUIRED_COLUMNS)
+                    st.session_state.df = clean_df
                     # ----------------------------------------------------------------
 
                     st.success("ดึงข้อมูลสำเร็จ!")
@@ -141,7 +142,7 @@ if st.session_state.df is not None:
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🧮 คำนวณ OT ทั้งหมด", use_container_width=True):
+        if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
             if not edited_df.empty:
                 df_to_process = edited_df.copy()
                 ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
