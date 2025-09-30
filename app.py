@@ -15,19 +15,14 @@ def decimal_to_hhmm(decimal_hours):
     return f"{hours:02d}:{minutes:02d}"
 
 def prepare_dataframe(df):
-    """[ปรับปรุง] แปลงชนิดข้อมูลให้ถูกต้องและแข็งแรงขึ้น ป้องกัน Error"""
-    # 1. แปลงคอลัมน์ Date, ถ้าผิดพลาดจะกลายเป็น NaT (ค่าว่างสำหรับเวลา)
+    """[แก้ไข] แปลงชนิดข้อมูลให้ถูกต้องและแข็งแรงขึ้น ป้องกัน Error"""
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
 
-    # 2. แปลงคอลัมน์เวลาทั้งหมด
     time_columns = ['TimeIn', 'TimeOut', 'Deduction']
     for col in time_columns:
-        # แทนที่ค่าว่างทุกรูปแบบด้วย None เพื่อให้จัดการง่าย
-        df[col] = df[col].replace({pd.NaT: None, '': None})
-        # แปลงเป็น object 'time', ถ้าผิดพลาดจะกลายเป็น None
+        # [แก้ไข] แก้ไข Format จาก %H:M เป็น %H:%M ที่ถูกต้อง
         df[col] = pd.to_datetime(df[col].astype(str), format='%H:%M', errors='coerce').dt.time
 
-    # 3. แปลงคอลัมน์ข้อความ, ค่าว่างทั้งหมดจะกลายเป็น string ว่าง ''
     str_columns = ['DayType', 'OT_Formatted']
     for col in str_columns:
         df[col] = df[col].fillna('').astype(str)
@@ -39,14 +34,15 @@ def calculate_ot(row):
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         deduction_time = row.get('Deduction')
 
-        if not all([isinstance(t, time) for t in [time_in, time_out]]) or not day_type:
+        # ตรวจสอบว่ามีข้อมูลเวลาเข้า/ออก ครบถ้วนหรือไม่
+        if not isinstance(time_in, time) or not isinstance(time_out, time) or not day_type:
             return 0
 
         dummy_date = datetime.now().date()
         dt_in = datetime.combine(dummy_date, time_in)
         dt_out = datetime.combine(dummy_date, time_out)
         
-        if dt_out < dt_in: dt_out += timedelta(days=1)
+        if dt_out <= dt_in: dt_out += timedelta(days=1)
 
         total_duration = dt_out - dt_in
         ot_hours_decimal = 0
@@ -117,7 +113,6 @@ with st.container(border=True):
                     all_data = st.session_state.worksheet.get_all_records()
                     df_from_sheet = pd.DataFrame(all_data)
                     
-                    # [ปรับปรุง] สร้าง DataFrame ให้มีโครงสร้างที่ถูกต้องเสมอ
                     st.session_state.df = pd.DataFrame(columns=REQUIRED_COLUMNS)
                     if not df_from_sheet.empty:
                         st.session_state.df = pd.concat([st.session_state.df, df_from_sheet], ignore_index=True)
@@ -136,7 +131,6 @@ if st.session_state.df is not None:
         column_config={
             "Date": st.column_config.DateColumn("🗓️ วันที่", format="YYYY-MM-DD", required=True),
             "DayType": st.column_config.SelectboxColumn("✨ ประเภทวัน", options=["Weekday", "Weekend"], required=True),
-            # [ปรับปรุง] format="HH:mm" คือรูปแบบ 24 ชั่วโมง
             "TimeIn": st.column_config.TimeColumn("🕘 เวลาเข้า", format="HH:mm", required=True, step=60),
             "TimeOut": st.column_config.TimeColumn("🕕 เวลาออก", format="HH:mm", required=True, step=60),
             "Deduction": st.column_config.TimeColumn("✂️ หักเวลา", format="HH:mm", step=60),
@@ -165,8 +159,10 @@ if st.session_state.df is not None:
                     df_to_save = edited_df.copy()
                     
                     for col in ['TimeIn', 'TimeOut', 'Deduction']:
+                        # แปลงเวลาเป็น string หรือ None ถ้าไม่มีค่า
                         df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else None)
                     
+                    # แปลงวันที่เป็น string หรือ None ถ้าไม่มีค่า
                     df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
                     df_to_save.fillna('', inplace=True)
                     
