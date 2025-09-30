@@ -5,10 +5,9 @@ from google.oauth2.service_account import Credentials
 from gspread_dataframe import set_with_dataframe
 from datetime import datetime, timedelta, time
 
-# --- 1. เพิ่ม 'Note' ในคอลัมน์ที่ต้องการ ---
+# --- ค่าคงที่และฟังก์ชัน ---
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
 
-# --- ฟังก์ชันต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
 def decimal_to_hhmm(decimal_hours):
     if not isinstance(decimal_hours, (int, float)) or decimal_hours < 0: return "00:00"
     hours = int(decimal_hours)
@@ -16,28 +15,47 @@ def decimal_to_hhmm(decimal_hours):
     return f"{hours:02d}:{minutes:02d}"
 
 def calculate_ot(row):
+    """[ปรับปรุง] เพิ่มตรรกะ: ถ้าเข้างานก่อน 9:00 ในวันธรรมดา ให้เริ่มนับเวลาทำงานตอน 9:00"""
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type: return 0.0
+        
         dummy_date = datetime.now().date()
         dt_in, dt_out = datetime.combine(dummy_date, time_in), datetime.combine(dummy_date, time_out)
         if dt_out <= dt_in: dt_out += timedelta(days=1)
+        
+        # --- [LOGIC UPDATE] ---
+        # กำหนดเวลาเริ่มงานที่ใช้คำนวณจริง (Effective Start Time)
+        effective_start_time = dt_in
+        if day_type == 'Weekday':
+            standard_start_time = datetime.combine(dummy_date, time(9, 0))
+            if dt_in < standard_start_time:
+                effective_start_time = standard_start_time # ถ้ามาเร็ว ให้เริ่มนับตอน 9 โมง
+        # ----------------------
+
         total_duration = dt_out - dt_in
         ot_hours_decimal = 0.0
+        
         if day_type == 'Weekday':
-            ot_start_time = dt_in + timedelta(hours=9, minutes=30)
-            if dt_out > ot_start_time: ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
+            # ใช้ effective_start_time ในการคำนวณ
+            ot_start_time = effective_start_time + timedelta(hours=9, minutes=30)
+            if dt_out > ot_start_time: 
+                ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
+        
         elif day_type == 'Weekend':
             breaks = timedelta(hours=0)
             if total_duration > timedelta(hours=4): breaks += timedelta(hours=1)
             if total_duration > timedelta(hours=9): breaks += timedelta(minutes=30)
             ot_hours_decimal = (total_duration - breaks).total_seconds() / 3600
+        
         deduction_time = row.get('Deduction')
         deduction_decimal = 0.0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
+            
         return max(0.0, ot_hours_decimal - deduction_decimal)
-    except Exception: return 0.0
+    except Exception: 
+        return 0.0
 
 def setup_sheet(worksheet):
     try:
@@ -70,7 +88,6 @@ st.title("🚀 OT Calculator | โปรแกรมคำนวณโอที"
 if 'df' not in st.session_state: st.session_state.df = None
 if 'worksheet' not in st.session_state: st.session_state.worksheet = None
 
-# --- ส่วนเชื่อมต่อ ---
 with st.container(border=True):
     sheet_url = st.text_input("🔗 วางลิงก์ Google Sheet ของคุณที่นี่")
     sheet_name = st.text_input("🏷️ ชื่อชีต (Sheet Name)", value="timesheet")
@@ -101,11 +118,7 @@ if st.session_state.df is not None:
     st.header("📝 ตารางเวลาทำงาน")
     st.caption("คุณสามารถ **แก้ไขข้อมูล** ในตารางได้โดยตรง | **ดับเบิลคลิก** ที่ช่องวันที่/เวลาเพื่อเปิดตัวเลือก")
 
-    # --- 2. เปลี่ยนกลับมาใช้ st.data_editor เพื่อให้แก้ไขและเลือกลบได้ ---
-    # เพิ่มคอลัมน์ 'Delete' สำหรับ checkbox
     st.session_state.df['Delete'] = False
-    
-    # กำหนดลำดับคอลัมน์ใหม่ ให้ Delete มาก่อน
     display_columns = ['Delete'] + REQUIRED_COLUMNS
     
     edited_df = st.data_editor(
@@ -120,16 +133,14 @@ if st.session_state.df is not None:
             "TimeOut": st.column_config.TimeColumn("🕕 เวลาออก", format="HH:mm", required=True, step=60),
             "Deduction": st.column_config.TimeColumn("✂️ หักเวลา", format="HH:mm", step=60),
             "OT_Formatted": st.column_config.TextColumn("💰 OT (ชม.:นาที)", disabled=True),
-            # --- 3. เพิ่ม Config สำหรับคอลัมน์ Note ---
             "Note": st.column_config.TextColumn("📝 หมายเหตุ"),
         },
         use_container_width=True,
-        disabled=['OT_Formatted'] # ทำให้คอลัมน์ OT แก้ไขไม่ได้
+        disabled=['OT_Formatted']
     )
 
     st.markdown("---")
 
-    # --- 4. เพิ่มปุ่มสำหรับจัดการข้อมูล (ลบ, เรียงลำดับ) ---
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("🗑️ ลบแถวที่เลือก", use_container_width=True):
@@ -151,7 +162,6 @@ if st.session_state.df is not None:
     with col4:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
-                # เตรียมข้อมูลสำหรับบันทึก (ไม่มีคอลัมน์ Delete)
                 df_to_save = edited_df.drop(columns=['Delete']).copy()
                 df_to_save = df_to_save.reindex(columns=REQUIRED_COLUMNS)
 
