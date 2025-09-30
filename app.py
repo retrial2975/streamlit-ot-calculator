@@ -10,7 +10,7 @@ import numpy as np
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
 
 def prepare_dataframe(df):
-    """ฟังก์ชันกลางสำหรับทำความสะอาดและแปลงชนิดข้อมูลของ DataFrame ให้ถูกต้อง 100%"""
+    """ฟังก์ชันนี้ใช้สำหรับทำความสะอาดข้อมูลที่มาจาก Google Sheet ครั้งแรกเท่านั้น"""
     clean_df = pd.DataFrame()
     for col in REQUIRED_COLUMNS:
         source_series = df.get(col, pd.Series(dtype='object'))
@@ -33,39 +33,29 @@ def calculate_ot(row):
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
         if not all(isinstance(t, time) for t in [time_in, time_out]) or not day_type: return 0.0
-        
         dummy_date = datetime.now().date()
         dt_in, dt_out = datetime.combine(dummy_date, time_in), datetime.combine(dummy_date, time_out)
         if dt_out <= dt_in: dt_out += timedelta(days=1)
-        
         ot_hours_decimal = 0.0
-        
         if day_type == 'Weekday':
             standard_start_time = datetime.combine(dummy_date, time(9, 0))
             calculation_base_time = max(dt_in, standard_start_time)
             ot_start_time = calculation_base_time + timedelta(hours=9, minutes=30)
             if dt_out > ot_start_time: ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
-        
         elif day_type == 'Weekend':
             total_duration = dt_out - dt_in
             breaks = timedelta(hours=0)
-            
             if total_duration > timedelta(hours=4) and time_in < time(13, 0):
                 breaks += timedelta(hours=1)
-
-            if total_duration > timedelta(hours=9): 
+            if total_duration > timedelta(hours=9):
                 breaks += timedelta(minutes=30)
-            
             ot_hours_decimal = (total_duration - breaks).total_seconds() / 3600
-        
         deduction_time = row.get('Deduction')
         deduction_decimal = 0.0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
-        
         return max(0.0, ot_hours_decimal - deduction_decimal)
-    except Exception: 
-        return 0.0
+    except Exception: return 0.0
 
 def setup_sheet(worksheet):
     try:
@@ -95,7 +85,7 @@ def connect_to_gsheet(sheet_url, sheet_name):
 st.set_page_config(layout="wide")
 st.title("🚀 OT Calculator | โปรแกรมคำนวณโอที")
 
-if 'df' not in st.session_state: st.session_state.df = None
+if 'df' not in st.session_state: st.session_state.df = pd.DataFrame(columns=REQUIRED_COLUMNS)
 if 'worksheet' not in st.session_state: st.session_state.worksheet = None
 
 with st.container(border=True):
@@ -105,8 +95,8 @@ with st.container(border=True):
         with st.spinner("กำลังเชื่อมต่อ..."):
             st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
             if st.session_state.worksheet:
-                all_values = st.session_state.worksheet.get_all_records()
-                source_df = pd.DataFrame(all_values)
+                all_records = st.session_state.worksheet.get_all_records()
+                source_df = pd.DataFrame(all_records)
                 st.session_state.df = prepare_dataframe(source_df)
                 st.success("เชื่อมต่อสำเร็จ!")
 
@@ -137,9 +127,7 @@ if st.session_state.df is not None:
     
     st.header("📊 สรุปผลและคำนวณรายรับ")
     def hhmm_to_decimal(t_str):
-        try:
-            h, m = map(int, t_str.split(':'))
-            return h + m / 60
+        try: h, m = map(int, str(t_str).split(':')); return h + m / 60
         except: return 0
     total_ot_decimal = edited_df['OT_Formatted'].apply(hhmm_to_decimal).sum()
     total_ot_hours, total_ot_minutes = int(total_ot_decimal), int((total_ot_decimal - int(total_ot_decimal)) * 60)
@@ -160,26 +148,27 @@ if st.session_state.df is not None:
     with col1:
         if st.button("🗑️ ลบแถวที่เลือก", use_container_width=True):
             rows_to_delete = edited_df[edited_df['Delete'] == True].index
-            df_after_delete = edited_df.drop(rows_to_delete)
-            st.session_state.df = prepare_dataframe(df_after_delete)
+            df_after_delete = st.session_state.df.drop(rows_to_delete)
+            st.session_state.df = df_after_delete.reset_index(drop=True)
             st.rerun()
     with col2:
         if st.button("📅 เรียงตามวันที่", use_container_width=True):
-            df_sorted = edited_df.sort_values(by="Date", ascending=True)
-            st.session_state.df = prepare_dataframe(df_sorted)
+            df_to_sort = st.session_state.df.copy()
+            df_to_sort['Date'] = pd.to_datetime(df_to_sort['Date'], errors='coerce')
+            df_sorted = df_to_sort.sort_values(by="Date", ascending=True)
+            st.session_state.df = df_sorted.reset_index(drop=True)
             st.rerun()
     with col3:
         if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
-            ot_decimal_values = edited_df.apply(calculate_ot, axis=1)
-            df_to_process = edited_df.copy()
+            df_to_process = edited_df.drop(columns=['Delete'])
+            ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
             df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
-            st.session_state.df = prepare_dataframe(df_to_process)
+            st.session_state.df = df_to_process
             st.rerun()
     with col4:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
-                df_to_save = edited_df.drop(columns=['Delete'])
-                df_to_save = df_to_save.reindex(columns=REQUIRED_COLUMNS)
+                df_to_save = st.session_state.df.copy().reindex(columns=REQUIRED_COLUMNS)
                 for col in ['TimeIn', 'TimeOut', 'Deduction']:
                     df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
                 df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
