@@ -15,6 +15,26 @@ def decimal_to_hhmm(decimal_hours):
     minutes = int(round((decimal_hours - hours) * 60))
     return f"{hours:02d}:{minutes:02d}"
 
+def prepare_dataframe(df):
+    """
+    ฟังก์ชันกลางสำหรับทำความสะอาดและแปลงชนิดข้อมูลของ DataFrame
+    ให้ถูกต้อง 100% ก่อนส่งไปให้ st.data_editor
+    """
+    clean_df = pd.DataFrame()
+    for col in REQUIRED_COLUMNS:
+        source_col_data = df.get(col)
+
+        if col == 'Date':
+            clean_df[col] = pd.to_datetime(source_col_data, errors='coerce')
+        elif col in ['TimeIn', 'TimeOut', 'Deduction']:
+            # บังคับเป็น string -> แทนที่ค่าว่างด้วย NaT -> แปลงเป็นเวลา
+            temp_series = pd.Series(source_col_data, dtype=str).replace(['', 'None', 'nan', 'NaT'], pd.NaT)
+            clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
+        else: # DayType, OT_Formatted
+            clean_df[col] = pd.Series(source_col_data, dtype=str).fillna('')
+    
+    return clean_df
+
 def calculate_ot(row):
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
@@ -52,6 +72,7 @@ def calculate_ot(row):
         return 0.0
 
 def setup_sheet(worksheet):
+    # ... (No changes here) ...
     try:
         headers = worksheet.row_values(1)
     except gspread.exceptions.APIError: headers = []
@@ -64,6 +85,7 @@ def setup_sheet(worksheet):
     return worksheet
 
 def connect_to_gsheet(sheet_url, sheet_name):
+    # ... (No changes here) ...
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_info(st.secrets["google_credentials"], scopes=scope)
@@ -80,7 +102,7 @@ def connect_to_gsheet(sheet_url, sheet_name):
 
 # --- ส่วนหน้าเว็บ Streamlit ---
 st.set_page_config(layout="wide")
-st.title("🚀 OT Calculator | โปรแกรมคำวณโอที")
+st.title("🚀 OT Calculator | โปรแกรมคำนวณโอที")
 
 if 'df' not in st.session_state: st.session_state.df = None
 if 'worksheet' not in st.session_state: st.session_state.worksheet = None
@@ -94,32 +116,10 @@ with st.container(border=True):
             with st.spinner("กำลังเชื่อมต่อ..."):
                 st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
                 if st.session_state.worksheet:
-                    
-                    # --- [REWRITE] อ่านและเตรียมข้อมูลด้วยวิธีที่ปลอดภัยที่สุด ---
-                    all_values = st.session_state.worksheet.get_all_values()
-                    if len(all_values) > 1:
-                        headers = all_values[0]
-                        data_rows = all_values[1:]
-                        # บังคับให้ข้อมูลทุกช่องเป็น string ตั้งแต่แรก
-                        source_df = pd.DataFrame(data_rows, columns=headers, dtype=str)
-                    else:
-                        # จัดการกรณีชีตว่างเปล่า
-                        source_df = pd.DataFrame(columns=REQUIRED_COLUMNS, dtype=str)
-
-                    # สร้าง DataFrame ใหม่ที่สะอาดและมีชนิดข้อมูลถูกต้อง
-                    clean_df = pd.DataFrame()
-                    for col in REQUIRED_COLUMNS:
-                        series = source_df.get(col, pd.Series(dtype='str')).fillna('')
-
-                        if col == 'Date':
-                            clean_df[col] = pd.to_datetime(series, errors='coerce')
-                        elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-                            clean_df[col] = pd.to_datetime(series, format='%H:%M', errors='coerce').dt.time
-                        else:
-                            clean_df[col] = series
-                    
-                    st.session_state.df = clean_df
-                    # ----------------------------------------------------------------
+                    all_data = st.session_state.worksheet.get_all_records()
+                    source_df = pd.DataFrame(all_data)
+                    # เรียกใช้ฟังก์ชันเตรียมข้อมูลหลังโหลด
+                    st.session_state.df = prepare_dataframe(source_df)
                     st.success("ดึงข้อมูลสำเร็จ!")
 
 if st.session_state.df is not None:
@@ -150,7 +150,11 @@ if st.session_state.df is not None:
                 df_to_process = edited_df.copy()
                 ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
                 df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
-                st.session_state.df = df_to_process
+                
+                # --- [CRITICAL FIX] ---
+                # "ทำความสะอาด" ข้อมูลอีกครั้งหลังคำนวณ ก่อนที่จะวาดหน้าจอใหม่
+                st.session_state.df = prepare_dataframe(df_to_process)
+                # ----------------------
                 st.rerun()
 
     with col2:
@@ -162,7 +166,7 @@ if st.session_state.df is not None:
                     for col in ['TimeIn', 'TimeOut', 'Deduction']:
                         df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
                     
-                    df_to_save[col] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
+                    df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
                     df_to_save.fillna('', inplace=True)
                     
                     st.session_state.worksheet.clear()
