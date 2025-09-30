@@ -6,7 +6,6 @@ from gspread_dataframe import set_with_dataframe
 from datetime import datetime, timedelta, time
 
 # --- ค่าคงที่และฟังก์ชัน ---
-
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted']
 
 def decimal_to_hhmm(decimal_hours):
@@ -18,28 +17,26 @@ def decimal_to_hhmm(decimal_hours):
 def prepare_dataframe(df):
     """แปลงชนิดข้อมูลใน DataFrame ให้ถูกต้องสำหรับ st.data_editor"""
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    
-    # [ปรับปรุง] เพิ่ม 'Deduction' เข้ามาในกลุ่มแปลงเวลา
+
     time_columns = ['TimeIn', 'TimeOut', 'Deduction']
     for col in time_columns:
-        df[col] = pd.to_datetime(df[col], format='%H:%M', errors='coerce').dt.time
+        # [ปรับปรุง] แปลงเป็น string ก่อนเพื่อให้แน่ใจว่า to_datetime ทำงานได้เสมอ
+        df[col] = pd.to_datetime(df[col].astype(str), format='%H:%M', errors='coerce').dt.time
 
     str_columns = ['DayType', 'OT_Formatted']
     for col in str_columns:
         if col in df.columns:
+            # [ปรับปรุง] จัดการค่าว่างให้เป็น string เปล่าๆ
             df[col] = df[col].fillna('').astype(str)
             
     return df
 
 def calculate_ot(row):
-    """คำนวณ OT เป็นทศนิยม และจัดการเวลาหักออก"""
     try:
         time_in, time_out, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
-        # [ปรับปรุง] รับค่า Deduction เป็น time object
         deduction_time = row.get('Deduction')
 
-        if not all([time_in, time_out, day_type]):
-            return 0
+        if not all([time_in, time_out, day_type]): return 0
 
         dummy_date = datetime.now().date()
         dt_in = datetime.combine(dummy_date, time_in)
@@ -53,25 +50,20 @@ def calculate_ot(row):
         if day_type == 'Weekday':
             actual_end_shift = dt_in + timedelta(hours=9)
             ot_start_time = actual_end_shift + timedelta(minutes=30)
-            
             if dt_out > ot_start_time:
-                ot_duration = dt_out - ot_start_time
-                ot_hours_decimal = ot_duration.total_seconds() / 3600
-                
+                ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
         elif day_type == 'Weekend':
             work_duration = total_duration
             if work_duration > timedelta(hours=4): work_duration -= timedelta(hours=1)
             if total_duration > timedelta(hours=9): work_duration -= timedelta(minutes=30)
             ot_hours_decimal = work_duration.total_seconds() / 3600
         
-        # [ปรับปรุง] แปลง Deduction จาก time object เป็นทศนิยม
         deduction_decimal = 0
         if isinstance(deduction_time, time):
             deduction_decimal = deduction_time.hour + deduction_time.minute / 60.0
             
         final_ot = ot_hours_decimal - deduction_decimal
         return max(0, final_ot)
-
     except (ValueError, TypeError, AttributeError):
         return 0
 
@@ -119,11 +111,16 @@ with st.container(border=True):
                 st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
                 if st.session_state.worksheet:
                     all_data = st.session_state.worksheet.get_all_records()
+                    
+                    # [ปรับปรุง] ทำให้การสร้าง DataFrame เรียบง่ายและปลอดภัยขึ้น
                     df_from_sheet = pd.DataFrame(all_data)
-                    st.session_state.df = pd.DataFrame(columns=REQUIRED_COLUMNS)
-                    if not df_from_sheet.empty:
-                        st.session_state.df = pd.concat([st.session_state.df, df_from_sheet], ignore_index=True)
-                    st.session_state.df = st.session_state.df.reindex(columns=REQUIRED_COLUMNS)
+                    # สร้าง DataFrame ว่างเปล่าที่มีคอลัมน์ที่ถูกต้อง
+                    empty_df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+                    # รวม DataFrame ที่โหลดมาเข้ากับโครงสร้างที่ถูกต้อง
+                    st.session_state.df = pd.concat([empty_df, df_from_sheet], ignore_index=True)
+                    # เลือกเฉพาะคอลัมน์ที่ต้องการและจัดลำดับ
+                    st.session_state.df = st.session_state.df[REQUIRED_COLUMNS]
+                    
                     st.session_state.df = prepare_dataframe(st.session_state.df)
                     st.success("ดึงข้อมูลสำเร็จ!")
 
@@ -137,10 +134,8 @@ if st.session_state.df is not None:
         column_config={
             "Date": st.column_config.DateColumn("🗓️ วันที่", format="YYYY-MM-DD", required=True),
             "DayType": st.column_config.SelectboxColumn("✨ ประเภทวัน", options=["Weekday", "Weekend"], required=True),
-            # [ปรับปรุง] เพิ่ม step=60 เพื่อเลือกเฉพาะนาที
             "TimeIn": st.column_config.TimeColumn("🕘 เวลาเข้า", format="HH:mm", required=True, step=60),
             "TimeOut": st.column_config.TimeColumn("🕕 เวลาออก", format="HH:mm", required=True, step=60),
-            # [ปรับปรุง] เปลี่ยน Deduction เป็น TimeColumn
             "Deduction": st.column_config.TimeColumn("✂️ หักเวลา", format="HH:mm", step=60),
             "OT_Formatted": st.column_config.TextColumn("💰 OT (ชั่วโมง:นาที)", disabled=True),
         },
@@ -166,7 +161,6 @@ if st.session_state.df is not None:
                 with st.spinner("กำลังบันทึก..."):
                     df_to_save = edited_df.copy()
                     
-                    # [ปรับปรุง] เพิ่ม 'Deduction' เข้ามาในกลุ่มแปลงกลับเป็น string
                     for col in ['TimeIn', 'TimeOut', 'Deduction']:
                         df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else t)
                     
