@@ -80,7 +80,7 @@ def connect_to_gsheet(sheet_url, sheet_name):
 
 # --- ส่วนหน้าเว็บ Streamlit ---
 st.set_page_config(layout="wide")
-st.title("🚀 OT Calculator | โปรแกรมคำนวณโอที")
+st.title("🚀 OT Calculator | โปรแกรมคำวณโอที")
 
 if 'df' not in st.session_state: st.session_state.df = None
 if 'worksheet' not in st.session_state: st.session_state.worksheet = None
@@ -94,29 +94,32 @@ with st.container(border=True):
             with st.spinner("กำลังเชื่อมต่อ..."):
                 st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
                 if st.session_state.worksheet:
-                    all_data = st.session_state.worksheet.get_all_records()
                     
-                    # --- [REWRITE] สร้าง DataFrame ด้วยวิธีที่ปลอดภัยที่สุด ---
-                    if not all_data:
-                        source_df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+                    # --- [REWRITE] อ่านและเตรียมข้อมูลด้วยวิธีที่ปลอดภัยที่สุด ---
+                    all_values = st.session_state.worksheet.get_all_values()
+                    if len(all_values) > 1:
+                        headers = all_values[0]
+                        data_rows = all_values[1:]
+                        # บังคับให้ข้อมูลทุกช่องเป็น string ตั้งแต่แรก
+                        source_df = pd.DataFrame(data_rows, columns=headers, dtype=str)
                     else:
-                        source_df = pd.DataFrame(all_data)
+                        # จัดการกรณีชีตว่างเปล่า
+                        source_df = pd.DataFrame(columns=REQUIRED_COLUMNS, dtype=str)
 
+                    # สร้าง DataFrame ใหม่ที่สะอาดและมีชนิดข้อมูลถูกต้อง
                     clean_df = pd.DataFrame()
                     for col in REQUIRED_COLUMNS:
-                        source_col_data = source_df.get(col)
+                        series = source_df.get(col, pd.Series(dtype='str')).fillna('')
 
                         if col == 'Date':
-                            clean_df[col] = pd.to_datetime(source_col_data, errors='coerce')
+                            clean_df[col] = pd.to_datetime(series, errors='coerce')
                         elif col in ['TimeIn', 'TimeOut', 'Deduction']:
-                            temp_series = pd.Series(source_col_data, dtype=str).replace(['', 'None', 'nan'], pd.NaT)
-                            clean_df[col] = pd.to_datetime(temp_series, format='%H:%M', errors='coerce').dt.time
-                        else: # DayType, OT_Formatted
-                            clean_df[col] = pd.Series(source_col_data, dtype=str).fillna('')
+                            clean_df[col] = pd.to_datetime(series, format='%H:%M', errors='coerce').dt.time
+                        else:
+                            clean_df[col] = series
                     
                     st.session_state.df = clean_df
                     # ----------------------------------------------------------------
-
                     st.success("ดึงข้อมูลสำเร็จ!")
 
 if st.session_state.df is not None:
@@ -159,7 +162,7 @@ if st.session_state.df is not None:
                     for col in ['TimeIn', 'TimeOut', 'Deduction']:
                         df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
                     
-                    df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
+                    df_to_save[col] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
                     df_to_save.fillna('', inplace=True)
                     
                     st.session_state.worksheet.clear()
