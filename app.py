@@ -16,12 +16,10 @@ def decimal_to_hhmm(decimal_hours):
     return f"{hours:02d}:{minutes:02d}"
 
 def calculate_ot(row):
-    """[REWRITE] รับค่าเวลาเป็น string 'HH:MM' และแปลงภายในฟังก์ชัน"""
     try:
-        time_in_str, time_out_str = row.get('TimeIn'), row.get('TimeOut')
-        day_type = row.get('DayType')
-
-        # แปลง string เป็น time object, ถ้าแปลงไม่ได้ให้ข้ามไป
+        time_in_str, time_out_str, day_type = row.get('TimeIn'), row.get('TimeOut'), row.get('DayType')
+        if not all([time_in_str, time_out_str, day_type]): return 0.0
+        
         time_in = datetime.strptime(time_in_str, '%H:%M').time()
         time_out = datetime.strptime(time_out_str, '%H:%M').time()
         
@@ -30,14 +28,12 @@ def calculate_ot(row):
         if dt_out <= dt_in: dt_out += timedelta(days=1)
         
         ot_hours_decimal = 0.0
-        
         if day_type == 'Weekday':
             standard_start_time = datetime.combine(dummy_date, time(9, 0))
             calculation_base_time = max(dt_in, standard_start_time)
             ot_start_time = calculation_base_time + timedelta(hours=9, minutes=30)
             if dt_out > ot_start_time: 
                 ot_hours_decimal = (dt_out - ot_start_time).total_seconds() / 3600
-        
         elif day_type == 'Weekend':
             total_duration = dt_out - dt_in
             breaks = timedelta(hours=0)
@@ -55,7 +51,6 @@ def calculate_ot(row):
     except (ValueError, TypeError, AttributeError): 
         return 0.0
 
-# --- ฟังก์ชันเชื่อมต่อ (ไม่มีการเปลี่ยนแปลง) ---
 def setup_sheet(worksheet):
     try:
         headers = worksheet.row_values(1)
@@ -101,25 +96,30 @@ with st.container(border=True):
                 else:
                     df = pd.DataFrame(columns=REQUIRED_COLUMNS, dtype=str)
 
-                # ทำให้แน่ใจว่าทุกคอลัมน์เป็น string และมีค่าว่างเป็น ''
+                # --- [CRITICAL FIX] ---
+                # 1. ทำให้แน่ใจว่าทุกคอลัมน์ที่ต้องการมีอยู่ และเป็น string
                 for col in REQUIRED_COLUMNS:
                     if col not in df.columns:
                         df[col] = ''
-                st.session_state.df = df[REQUIRED_COLUMNS].fillna('')
+                df = df[REQUIRED_COLUMNS].fillna('')
+
+                # 2. แปลงคอลัมน์ 'Date' ให้เป็นชนิด datetime ที่ถูกต้อง
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                # ----------------------
+
+                st.session_state.df = df
                 st.success("เชื่อมต่อสำเร็จ!")
 
 if st.session_state.df is not None:
     st.header("📝 ตารางเวลาทำงาน")
     st.caption("กรอกเวลาในรูปแบบ **HH:MM** (เช่น 09:30 หรือ 22:50)")
 
-    # เพิ่มคอลัมน์ 'Delete' สำหรับ checkbox
     edited_df = st.data_editor(
         st.session_state.df,
         key="main_data_editor", num_rows="dynamic",
         column_config={
             "Date": st.column_config.DateColumn("🗓️ วันที่", format="YYYY-MM-DD", required=True),
             "DayType": st.column_config.SelectboxColumn("✨ ประเภทวัน", options=["Weekday", "Weekend"], required=True),
-            # [REWRITE] เปลี่ยนเป็น TextColumn ทั้งหมด
             "TimeIn": st.column_config.TextColumn("🕘 เวลาเข้า (HH:MM)", required=True),
             "TimeOut": st.column_config.TextColumn("🕕 เวลาออก (HH:MM)", required=True),
             "Deduction": st.column_config.TextColumn("✂️ หักเวลา (HH:MM)"),
@@ -127,34 +127,35 @@ if st.session_state.df is not None:
             "Note": st.column_config.TextColumn("📝 หมายเหตุ"),
         },
         use_container_width=True, disabled=['OT_Formatted'])
+    
+    # ... (ส่วนสรุปผลและคำนวณเงิน ยังไม่ใส่เพื่อลดความซับซ้อน) ...
 
-    # ส่วนสรุปและคำนวณเงิน (ไม่มีการเปลี่ยนแปลง)
-    # ... (ส่วนนี้เหมือนเดิม)
-
-    # ส่วนปุ่มจัดการ
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("---")
+    st.header("⚙️ เครื่องมือจัดการ")
+    col1, col2, col3 = st.columns(3)
     with col1:
-        #... (ส่วนปุ่มลบ ยังไม่ใส่เพื่อลดความซับซ้อน)
-        pass
-    with col2:
         if st.button("📅 เรียงตามวันที่", use_container_width=True):
-            df_sorted = edited_df.sort_values(by="Date", ascending=True).reset_index(drop=True)
-            st.session_state.df = df_sorted
+            # ต้องจัดการกับแถวที่มีวันที่ว่าง (NaT) ก่อนเรียง
+            df_to_sort = edited_df.copy()
+            df_to_sort['Date'] = pd.to_datetime(df_to_sort['Date'], errors='coerce')
+            df_sorted = df_to_sort.dropna(subset=['Date']).sort_values(by="Date", ascending=True)
+            st.session_state.df = pd.concat([df_sorted, df_to_sort[df_to_sort['Date'].isnull()]]).reset_index(drop=True)
             st.rerun()
-    with col3:
+    with col2:
         if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
             df_to_process = edited_df.copy()
             ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
             df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
             st.session_state.df = df_to_process
             st.rerun()
-    with col4:
+    with col3:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
-                # ข้อมูลเป็น string อยู่แล้ว ไม่ต้องแปลงซ้ำ
-                df_to_save = edited_df.reindex(columns=REQUIRED_COLUMNS)
-                df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
-                df_to_save.fillna('', inplace=True)
+                df_to_save = edited_df.copy()
+                # แปลง Date กลับเป็น string ก่อนบันทึก
+                df_to_save['Date'] = pd.to_datetime(df_to_save['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                df_to_save = df_to_save.reindex(columns=REQUIRED_COLUMNS).fillna('')
+
                 st.session_state.worksheet.clear()
                 set_with_dataframe(st.session_state.worksheet, df_to_save, include_index=False)
                 st.success("บันทึกข้อมูลเรียบร้อย!")
