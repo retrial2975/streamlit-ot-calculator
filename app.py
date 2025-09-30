@@ -16,18 +16,14 @@ def decimal_to_hhmm(decimal_hours):
     return f"{hours:02d}:{minutes:02d}"
 
 def prepare_dataframe(df):
-    """[ใหม่] ฟังก์ชันเตรียมข้อมูลที่แข็งแรงขึ้น เพื่อป้องกัน Error ทุกกรณี"""
-    # 1. จัดการคอลัมน์ Date
+    """ฟังก์ชันเตรียมข้อมูลสำหรับข้อมูลที่โหลดจาก Google Sheet เท่านั้น"""
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
 
-    # 2. จัดการคอลัมน์เวลาทั้งหมด
     time_columns = ['TimeIn', 'TimeOut', 'Deduction']
     for col in time_columns:
-        # บังคับให้เป็น string, แทนที่ text ที่เป็นค่าว่างด้วย None, แล้วค่อยแปลงเป็นเวลา
         s = df[col].astype(str).replace({'NaT': None, 'None': None, '': None})
         df[col] = pd.to_datetime(s, format='%H:%M', errors='coerce').dt.time
 
-    # 3. จัดการคอลัมน์ข้อความ
     str_columns = ['DayType', 'OT_Formatted']
     for col in str_columns:
         df[col] = df[col].fillna('').astype(str)
@@ -117,10 +113,9 @@ with st.container(border=True):
                     all_data = st.session_state.worksheet.get_all_records()
                     df = pd.DataFrame(all_data)
                     
-                    # [ใหม่] สร้าง DataFrame ให้ถูกต้องและปลอดภัย
                     for col in REQUIRED_COLUMNS:
                         if col not in df.columns:
-                            df[col] = None # สร้างคอลัมน์ที่ขาดไปด้วยค่าว่างที่ปลอดภัย
+                            df[col] = None
                     
                     st.session_state.df = df[REQUIRED_COLUMNS]
                     st.session_state.df = prepare_dataframe(st.session_state.df)
@@ -151,8 +146,8 @@ if st.session_state.df is not None:
     with col1:
         if st.button("🧮 คำนวณ OT ทั้งหมด", use_container_width=True):
             if not edited_df.empty:
-                # ก่อนคำนวณ ให้ clean ข้อมูลที่แก้ไขล่าสุดอีกครั้งเพื่อความปลอดภัย
-                df_to_process = prepare_dataframe(edited_df.copy())
+                # [แก้ไข] นำบรรทัดที่เรียก prepare_dataframe ออกจากส่วนนี้
+                df_to_process = edited_df.copy()
                 ot_decimal_values = df_to_process.apply(calculate_ot, axis=1)
                 df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
                 st.session_state.df = df_to_process
