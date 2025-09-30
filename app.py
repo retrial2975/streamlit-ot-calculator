@@ -10,6 +10,23 @@ from datetime import datetime, timedelta, time
 # รายชื่อคอลัมน์ที่โปรแกรมต้องการ
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'OT_Hours']
 
+def prepare_dataframe(df):
+    """แปลงชนิดข้อมูลใน DataFrame ให้ถูกต้องสำหรับ st.data_editor"""
+    # 1. แปลงคอลัมน์ Date ให้เป็นชนิด datetime
+    # errors='coerce' จะเปลี่ยนค่าที่แปลงไม่ได้ (เช่น text ว่าง) ให้เป็น NaT (Not a Time)
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    
+    # 2. แปลง OT_Hours ให้เป็นชนิดตัวเลข
+    df['OT_Hours'] = pd.to_numeric(df['OT_Hours'], errors='coerce').fillna(0)
+
+    # 3. ทำให้คอลัมน์ที่เป็นข้อความไม่มีค่า Na หรือ NaN และเป็นชนิด string
+    str_columns = ['DayType', 'TimeIn', 'TimeOut']
+    for col in str_columns:
+        if col in df.columns:
+            df[col] = df[col].fillna('').astype(str)
+            
+    return df
+
 def setup_sheet(worksheet):
     """ตรวจสอบหัวคอลัมน์ในชีต ถ้าไม่มีจะสร้างให้โดยอัตโนมัติ"""
     try:
@@ -115,28 +132,29 @@ with st.container(border=True):
                     all_data = st.session_state.worksheet.get_all_records()
                     df_from_sheet = pd.DataFrame(all_data)
                     
-                    # สร้าง DataFrame ที่มีโครงสร้างคอลัมน์ที่ถูกต้องเสมอ
                     st.session_state.df = pd.DataFrame(columns=REQUIRED_COLUMNS)
                     if not df_from_sheet.empty:
-                        # เติมข้อมูลจาก sheet เข้าไปในโครงสร้างที่ถูกต้อง
                         st.session_state.df = pd.concat([st.session_state.df, df_from_sheet], ignore_index=True)
                     
-                    # ทำให้แน่ใจว่าทุกคอลัมน์ที่ต้องการมีอยู่
                     for col in REQUIRED_COLUMNS:
                         if col not in st.session_state.df.columns:
                             st.session_state.df[col] = ''
                     
-                    st.session_state.df = st.session_state.df[REQUIRED_COLUMNS] # จัดลำดับคอลัมน์ให้ถูกต้อง
+                    st.session_state.df = st.session_state.df[REQUIRED_COLUMNS]
+                    
+                    # แปลงชนิดข้อมูลให้ถูกต้องก่อนแสดงผล
+                    st.session_state.df = prepare_dataframe(st.session_state.df)
+                    
                     st.success("ดึงข้อมูลสำเร็จ!")
                 else:
                     st.session_state.df = None
         else:
             st.warning("กรุณากรอกข้อมูลให้ครบถ้วน")
 
-# ส่วนแสดงผลและแก้ไขข้อมูล (จะแสดงเมื่อเชื่อมต่อสำเร็จ)
+# ส่วนแสดงผลและแก้ไขข้อมูล
 if st.session_state.df is not None:
     st.header("📝 ตารางเวลาทำงาน")
-    st.caption("คุณสามารถแก้ไขข้อมูลในตารางได้โดยตรง, เพิ่มแถวใหม่, หรือลบแถวที่ไม่ต้องการได้เลย")
+    st.caption("ดับเบิลคลิกที่ช่องวันที่เพื่อเปิดปฏิทิน, สามารถแก้ไขข้อมูลในตาราง, เพิ่ม/ลบแถวได้โดยตรง")
 
     edited_df = st.data_editor(
         st.session_state.df,
@@ -159,21 +177,20 @@ if st.session_state.df is not None:
     with col1:
         if st.button("🧮 คำนวณ OT ทั้งหมด", use_container_width=True):
             if not edited_df.empty:
-                # ใช้ DataFrame ที่แก้ไขล่าสุดมาคำนวณ
-                st.session_state.df = edited_df
+                df_to_process = edited_df.copy()
+                st.session_state.df = df_to_process
                 st.session_state.df['OT_Hours'] = st.session_state.df.apply(calculate_ot, axis=1)
-                st.rerun() # รีเฟรชหน้าจอเพื่อแสดงผลลัพธ์ใหม่
+                st.rerun()
 
     with col2:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             if st.session_state.worksheet:
                 with st.spinner("กำลังบันทึกข้อมูล..."):
-                    # ใช้ DataFrame ที่แก้ไขล่าสุดในการบันทึก
                     df_to_save = edited_df.copy()
                     
-                    # แปลงประเภทข้อมูลให้ถูกต้องก่อนบันทึก
                     df_to_save.fillna('', inplace=True)
-                    if 'Date' in df_to_save.columns and pd.api.types.is_datetime64_any_dtype(df_to_save['Date']):
+                    if 'Date' in df_to_save.columns:
+                         # แปลงวันที่กลับเป็น string ใน format ที่ต้องการก่อนบันทึก
                         df_to_save['Date'] = pd.to_datetime(df_to_save['Date']).dt.strftime('%Y-%m-%d')
                     
                     st.session_state.worksheet.clear()
