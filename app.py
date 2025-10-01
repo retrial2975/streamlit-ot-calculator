@@ -234,20 +234,20 @@ if st.session_state.df is not None:
             st.session_state.df = prepare_dataframe(df_sorted)
             st.rerun()
     with col3:
-    if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
-        # 1. เตรียมข้อมูลให้พร้อมก่อนส่งไปคำนวณ
-        df_prepared = prepare_dataframe(edited_df)
-
-        # 2. ส่งข้อมูลที่คลีนแล้วไปคำนวณ
-        ot_decimal_values = df_prepared.apply(calculate_ot, axis=1)
-
-        # 3. นำผลลัพธ์กลับไปใส่ใน DataFrame เดิมเพื่อแสดงผล
-        df_to_process = edited_df.copy() # ใช้ edited_df เพื่อรักษาข้อมูลที่ผู้ใช้แก้ล่าสุด
-        df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
-        
-        # 4. บันทึกสถานะและ rerun
-        st.session_state.df = prepare_dataframe(df_to_process)
-        st.rerun()
+        if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
+            # 1. เตรียมข้อมูลให้พร้อมก่อนส่งไปคำนวณ
+            df_prepared = prepare_dataframe(edited_df)
+    
+            # 2. ส่งข้อมูลที่คลีนแล้วไปคำนวณ
+            ot_decimal_values = df_prepared.apply(calculate_ot, axis=1)
+    
+            # 3. นำผลลัพธ์กลับไปใส่ใน DataFrame เดิมเพื่อแสดงผล
+            df_to_process = edited_df.copy() # ใช้ edited_df เพื่อรักษาข้อมูลที่ผู้ใช้แก้ล่าสุด
+            df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
+            
+            # 4. บันทึกสถานะและ rerun
+            st.session_state.df = prepare_dataframe(df_to_process)
+            st.rerun()
     with col4:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
