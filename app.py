@@ -10,7 +10,6 @@ import numpy as np
 REQUIRED_COLUMNS = ['Date', 'DayType', 'TimeIn', 'TimeOut', 'Deduction', 'OT_Formatted', 'Note']
 
 def prepare_dataframe(df):
-    """ฟังก์ชันกลางสำหรับทำความสะอาดและแปลงชนิดข้อมูลของ DataFrame ให้ถูกต้อง 100%"""
     clean_df = pd.DataFrame()
     for col in REQUIRED_COLUMNS:
         source_series = df.get(col, pd.Series(dtype='object'))
@@ -20,10 +19,8 @@ def prepare_dataframe(df):
             def to_time_obj(x):
                 if isinstance(x, time): return x
                 if pd.isna(x) or str(x).strip() in ['', 'None', 'NaT', 'nan']: return None
-                try:
-                    return datetime.strptime(str(x), '%H:%M').time()
-                except (ValueError, TypeError):
-                    return None
+                try: return datetime.strptime(str(x), '%H:%M').time()
+                except (ValueError, TypeError): return None
             clean_df[col] = source_series.apply(to_time_obj)
         else:
             clean_df[col] = pd.Series(source_series, dtype=str).fillna('')
@@ -55,13 +52,8 @@ def calculate_ot(row):
         elif day_type == 'Weekend':
             total_duration = dt_out - dt_in
             breaks = timedelta(hours=0)
-            
-            if total_duration > timedelta(hours=4) and time_in < time(13, 0):
-                breaks += timedelta(hours=1)
-
-            if total_duration > timedelta(hours=9): 
-                breaks += timedelta(minutes=30)
-            
+            if total_duration > timedelta(hours=4) and time_in < time(13, 0): breaks += timedelta(hours=1)
+            if total_duration > timedelta(hours=9): breaks += timedelta(minutes=30)
             ot_hours_decimal = (total_duration - breaks).total_seconds() / 3600
         
         deduction_time = row.get('Deduction')
@@ -74,10 +66,7 @@ def calculate_ot(row):
         return 0.0
 
 def setup_sheet(worksheet):
-    try:
-        headers = worksheet.row_values(1)
-    except gspread.exceptions.APIError: headers = []
-    
+    headers = worksheet.row_values(1)
     if not headers:
         worksheet.update('A1', [REQUIRED_COLUMNS])
         headers = REQUIRED_COLUMNS
@@ -101,25 +90,23 @@ def connect_to_gsheet(sheet_url, sheet_name):
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="20")
         
         worksheet = setup_sheet(worksheet)
-        all_data = worksheet.get_all_values()
+        all_records = worksheet.get_all_records()
+        source_df = pd.DataFrame(all_records)
         
-        if len(all_data) > 1:
-            headers = all_data[0]
-            data_rows = all_data[1:]
-            source_df = pd.DataFrame(data_rows, columns=headers)
-            st.session_state.df = prepare_dataframe(source_df)
+        # --- [START] การแก้ไขที่สำคัญ ---
+        # ตรวจสอบว่า DataFrame ว่างเปล่าหรือไม่
+        if source_df.empty:
+            # ถ้าใช่ ให้สร้าง DataFrame ที่มีแถวเริ่มต้น 1 แถว
+            st.session_state.df = pd.DataFrame([{col: None for col in REQUIRED_COLUMNS}])
         else:
-            # *** [START] การแก้ไขที่สำคัญ ***
-            # ถ้าชีตว่าง ให้สร้าง DataFrame ที่มีแถวว่าง 1 แถวให้เลย
-            blank_row_df = pd.DataFrame([{col: None for col in REQUIRED_COLUMNS}])
-            st.session_state.df = prepare_dataframe(blank_row_df)
-            # *** [END] การแก้ไขที่สำคัญ ***
+            # ถ้าไม่ใช่ ให้ใช้ข้อมูลที่อ่านมา
+            st.session_state.df = prepare_dataframe(source_df)
+        # --- [END] การแก้ไขที่สำคัญ ---
             
         return worksheet
-
     except Exception as e:
         st.error(f"การเชื่อมต่อล้มเหลว: {e}")
-        st.session_state.df = None # เคลียร์ค่า df ถ้าเชื่อมต่อไม่ได้
+        st.session_state.df = None
         return None
 
 # --- ส่วนหน้าเว็บ Streamlit ---
@@ -130,12 +117,13 @@ if 'df' not in st.session_state: st.session_state.df = None
 if 'worksheet' not in st.session_state: st.session_state.worksheet = None
 
 with st.expander("📖 คลิกเพื่อดูวิธีการตั้งค่าและหลักการคำนวณ"):
+    # ... (ส่วนคำอธิบายเหมือนเดิมทั้งหมด) ...
     st.subheader("การตั้งค่า Google Sheet")
-    st.write("...") # (ส่วนคำอธิบายเหมือนเดิม)
+    st.write("...") 
     st.subheader("หลักการคำนวณ OT")
-    st.markdown("...") # (ส่วนคำอธิบายเหมือนเดิม)
+    st.markdown("...")
     st.subheader("หลักการคำนวณรายรับ OT")
-    st.markdown("...") # (ส่วนคำอธิบายเหมือนเดิม)
+    st.markdown("...")
 
 with st.container(border=True):
     sheet_url = st.text_input("🔗 วางลิงก์ Google Sheet ของคุณที่นี่")
@@ -143,7 +131,9 @@ with st.container(border=True):
     if st.button("เชื่อมต่อ / รีเฟรชข้อมูล", type="primary"):
         with st.spinner("กำลังเชื่อมต่อ..."):
             st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
-            if st.session_state.worksheet:
+            # หลังจากการเชื่อมต่อ ให้ clean ข้อมูลใน state เสมอ
+            if st.session_state.df is not None:
+                st.session_state.df = prepare_dataframe(st.session_state.df)
                 st.success("เชื่อมต่อสำเร็จ!")
 
 if st.session_state.df is not None:
@@ -172,6 +162,7 @@ if st.session_state.df is not None:
     st.markdown("---")
     
     st.header("📊 สรุปผลและคำนวณรายรับ")
+    # ... (ส่วนสรุปผลเหมือนเดิมทั้งหมด) ...
     def hhmm_to_decimal(t_str):
         try:
             h, m = map(int, t_str.split(':'))
@@ -216,28 +207,21 @@ if st.session_state.df is not None:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
                 df_to_save = edited_df.drop(columns=['Delete'])
-                df_to_save = df_to_save.reindex(columns=REQUIRED_COLUMNS)
+                df_to_save = prepare_dataframe(df_to_save) # Clean ก่อนบันทึก
                 
-                # *** [START] การแก้ไขส่วนการบันทึก ***
+                # กรองแถวที่ข้อมูลสำคัญยังไม่ครบออกก่อนบันทึก
+                df_to_save.dropna(subset=['Date', 'DayType', 'TimeIn', 'TimeOut'], how='any', inplace=True)
+
                 def format_date_for_save(d):
-                    # ถ้าวันที่เป็นค่าว่าง (NaT) ให้คืนค่าเป็นสตริงว่าง
-                    if pd.isna(d):
-                        return ""
-                    # ถ้ามีค่า ให้จัดรูปแบบ
+                    if pd.isna(d): return ""
                     return d.strftime('%Y-%m-%d')
                 
-                df_to_save['Date'] = pd.to_datetime(df_to_save['Date'], errors='coerce').apply(format_date_for_save)
-                # *** [END] การแก้ไขส่วนการบันทึก ***
-
+                df_to_save['Date'] = df_to_save['Date'].apply(format_date_for_save)
                 for col in ['TimeIn', 'TimeOut', 'Deduction']:
                     df_to_save[col] = df_to_save[col].apply(lambda t: t.strftime('%H:%M') if isinstance(t, time) else "")
                 
                 df_to_save.fillna('', inplace=True)
                 
-                # ลบแถวที่ยังกรอกข้อมูลไม่ครบ (โดยเช็คจากวันที่) ก่อนบันทึก
-                df_to_save.dropna(subset=['Date'], inplace=True)
-                df_to_save = df_to_save[df_to_save['Date'] != '']
-                
                 st.session_state.worksheet.clear()
-                set_with_dataframe(st.session_state.worksheet, df_to_save, include_index=False)
+                set_with_dataframe(st.session_state.worksheet, df_to_save, include_index=False, allow_formulas=False)
                 st.success("บันทึกข้อมูลเรียบร้อย!")
