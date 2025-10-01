@@ -77,6 +77,11 @@ def setup_sheet(worksheet):
     try:
         headers = worksheet.row_values(1)
     except gspread.exceptions.APIError: headers = []
+    # If headers are empty (totally blank sheet), create them
+    if not headers:
+        worksheet.update('A1', [REQUIRED_COLUMNS])
+        headers = REQUIRED_COLUMNS
+
     missing_columns = [col for col in REQUIRED_COLUMNS if col not in headers]
     if missing_columns:
         start_col_index = len(headers) + 1
@@ -94,8 +99,26 @@ def connect_to_gsheet(sheet_url, sheet_name):
             worksheet = spreadsheet.worksheet(sheet_name)
         except gspread.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="20")
-        return setup_sheet(worksheet)
-    except Exception: return None
+        
+        # Ensure headers exist before reading data
+        worksheet = setup_sheet(worksheet)
+        
+        all_data = worksheet.get_all_values()
+        
+        if len(all_data) > 1: # If there is at least one data row
+            headers = all_data[0]
+            data_rows = all_data[1:]
+            source_df = pd.DataFrame(data_rows, columns=headers)
+        else: # If there's only a header or the sheet is empty
+            headers = all_data[0] if all_data else REQUIRED_COLUMNS
+            source_df = pd.DataFrame(columns=headers)
+            
+        st.session_state.df = prepare_dataframe(source_df)
+        return worksheet
+
+    except Exception as e:
+        st.error(f"การเชื่อมต่อล้มเหลว: {e}")
+        return None
 
 # --- ส่วนหน้าเว็บ Streamlit ---
 st.set_page_config(layout="wide")
@@ -168,9 +191,6 @@ with st.container(border=True):
         with st.spinner("กำลังเชื่อมต่อ..."):
             st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
             if st.session_state.worksheet:
-                all_values = st.session_state.worksheet.get_all_records()
-                source_df = pd.DataFrame(all_values)
-                st.session_state.df = prepare_dataframe(source_df)
                 st.success("เชื่อมต่อสำเร็จ!")
 
 if st.session_state.df is not None:
@@ -233,17 +253,10 @@ if st.session_state.df is not None:
             st.rerun()
     with col3:
         if st.button("🮔 คำนวณ OT ทั้งหมด", use_container_width=True):
-            # 1. นำข้อมูลจากตารางมาทำความสะอาดก่อน เพื่อให้แน่ใจว่าชนิดข้อมูลถูกต้องทั้งหมด
             df_prepared_for_calc = prepare_dataframe(edited_df)
-
-            # 2. ส่ง "ข้อมูลที่สะอาดแล้ว" ไปคำนวณ OT
             ot_decimal_values = df_prepared_for_calc.apply(calculate_ot, axis=1)
-
-            # 3. นำผลลัพธ์ OT กลับไปใส่ใน DataFrame ที่จะแสดงผล
-            df_to_process = edited_df.copy() # ใช้ edited_df เพื่อรักษาค่าที่ผู้ใช้กรอกล่าสุดไว้
+            df_to_process = edited_df.copy()
             df_to_process['OT_Formatted'] = ot_decimal_values.apply(decimal_to_hhmm)
-            
-            # 4. บันทึก DataFrame ที่สมบูรณ์ลง session_state แล้วสั่งให้หน้าเว็บโหลดใหม่
             st.session_state.df = prepare_dataframe(df_to_process)
             st.rerun()
     with col4:
