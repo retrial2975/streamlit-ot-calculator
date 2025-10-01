@@ -93,15 +93,24 @@ def connect_to_gsheet(sheet_url, sheet_name):
         all_records = worksheet.get_all_records()
         source_df = pd.DataFrame(all_records)
         
-        # --- [START] การแก้ไขที่สำคัญ ---
-        # ตรวจสอบว่า DataFrame ว่างเปล่าหรือไม่
+        # --- [START] การแก้ไขตามที่คุณแนะนำ ---
         if source_df.empty:
-            # ถ้าใช่ ให้สร้าง DataFrame ที่มีแถวเริ่มต้น 1 แถว
-            st.session_state.df = pd.DataFrame([{col: None for col in REQUIRED_COLUMNS}])
+            # ถ้าชีตว่าง ให้สร้างแถวตัวอย่างขึ้นมา 1 แถว
+            today = datetime.now()
+            default_row = {
+                'Date': today.date(),
+                'DayType': 'Weekend' if today.weekday() > 4 else 'Weekday',
+                'TimeIn': time(9, 0),
+                'TimeOut': time(18, 0),
+                'Deduction': None,
+                'OT_Formatted': None,
+                'Note': 'แถวเริ่มต้นอัตโนมัติ'
+            }
+            st.session_state.df = pd.DataFrame([default_row])
         else:
-            # ถ้าไม่ใช่ ให้ใช้ข้อมูลที่อ่านมา
+            # ถ้ามีข้อมูลอยู่แล้ว ก็ใช้ข้อมูลนั้นตามปกติ
             st.session_state.df = prepare_dataframe(source_df)
-        # --- [END] การแก้ไขที่สำคัญ ---
+        # --- [END] การแก้ไข ---
             
         return worksheet
     except Exception as e:
@@ -131,7 +140,6 @@ with st.container(border=True):
     if st.button("เชื่อมต่อ / รีเฟรชข้อมูล", type="primary"):
         with st.spinner("กำลังเชื่อมต่อ..."):
             st.session_state.worksheet = connect_to_gsheet(sheet_url, sheet_name)
-            # หลังจากการเชื่อมต่อ ให้ clean ข้อมูลใน state เสมอ
             if st.session_state.df is not None:
                 st.session_state.df = prepare_dataframe(st.session_state.df)
                 st.success("เชื่อมต่อสำเร็จ!")
@@ -207,9 +215,8 @@ if st.session_state.df is not None:
         if st.button("💾 บันทึกข้อมูลลง Google Sheet", type="primary", use_container_width=True):
             with st.spinner("กำลังบันทึก..."):
                 df_to_save = edited_df.drop(columns=['Delete'])
-                df_to_save = prepare_dataframe(df_to_save) # Clean ก่อนบันทึก
+                df_to_save = prepare_dataframe(df_to_save)
                 
-                # กรองแถวที่ข้อมูลสำคัญยังไม่ครบออกก่อนบันทึก
                 df_to_save.dropna(subset=['Date', 'DayType', 'TimeIn', 'TimeOut'], how='any', inplace=True)
 
                 def format_date_for_save(d):
