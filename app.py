@@ -100,7 +100,7 @@ def connect_to_gsheet(sheet_url, sheet_name):
                 'DayType': 'Weekend' if today.weekday() > 4 else 'Weekday',
                 'TimeIn': time(9, 0),
                 'TimeOut': time(18, 0),
-                'Deduction': time(18, 0),
+                'Deduction': time(0, 0),
                 'OT_Formatted': None,
                 'Note': 'แถวเริ่มต้นอัตโนมัติ'
             }
